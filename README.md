@@ -1,10 +1,13 @@
 <!-- logo: drop a file at docs/assets/logo.png (square, ~200px) -->
 <p align="center">
-  <img src="docs/assets/logo.png" alt="Seneca" width="160">
+ 
+<img width="200" height="200" alt="Pi7_Gemini_Generated_Image_6s4dh96s4dh96s4d-Photoroom" src="https://github.com/user-attachments/assets/254858fa-f3bc-4899-bde6-2af5a14a9fa6" />
+
 </p>
 
-<h1 align="center">Seneca</h1>
 
+
+<h1 align="center">Seneca</h1>
 <p align="center">
   <b>Run a whole swarm of AI agents as one unit — gang-scheduled, budgeted together,<br>
   and freezable in a heartbeat.</b>
