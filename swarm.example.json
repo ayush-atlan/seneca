@@ -1,0 +1,8 @@
+{
+  "name": "demo",
+  "members": [
+    { "name": "planner",  "kernel": "vmlinux", "rootfs": "rootfs.ext4", "vcpus": 1, "mem_mib": 256 },
+    { "name": "worker",   "kernel": "vmlinux", "rootfs": "rootfs.ext4", "vcpus": 1, "mem_mib": 256 },
+    { "name": "reviewer", "kernel": "vmlinux", "rootfs": "rootfs.ext4", "vcpus": 1, "mem_mib": 256 }
+  ]
+}

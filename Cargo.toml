@@ -1,0 +1,11 @@
+[package]
+name = "seneca"
+version = "0.1.0"
+edition = "2021"
+
+# ponytail: serde_json is the standard, minimal way to read/write JSON in Rust;
+# hand-rolling a parser is not lazier. No async runtime -- Firecracker boots from
+# a config file, so Phase 1 makes zero HTTP calls.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
