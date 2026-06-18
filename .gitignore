@@ -1,0 +1,5 @@
+/target
+/.seneca
+*.pdf
+.DS_Store
+.claude
