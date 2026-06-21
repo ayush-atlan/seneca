@@ -3,9 +3,11 @@ name = "seneca"
 version = "0.1.0"
 edition = "2021"
 
-# ponytail: serde_json is the standard, minimal way to read/write JSON in Rust;
-# hand-rolling a parser is not lazier. No async runtime -- Firecracker boots from
-# a config file, so Phase 1 makes zero HTTP calls.
+# serde_json: standard JSON. sha2 + ed25519-dalek: the tamper-evident evidence log
+# (hash chain + host-held signing key) -- never hand-roll crypto. getrandom: key seed.
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+ed25519-dalek = "2"
+getrandom = "0.2"

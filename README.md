@@ -1,102 +1,46 @@
-<!-- logo: drop a file at docs/assets/logo.png (square, ~200px) -->
-<p align="center">
-  <img src="docs/assets/logo.png" alt="Seneca" width="160">
-</p>
+# Seneca
 
-<h1 align="center">Seneca</h1>
+**The flight recorder for AI agents — prove what your agent did, tamper-evidently.**
 
-<p align="center">
-  <b>Run a whole swarm of AI agents as one unit — gang-scheduled, budgeted together,<br>
-  and freezable in a heartbeat.</b>
-</p>
+AI agents now take real actions with real credentials. After an incident the question isn't "should it have?" — it's *"what exactly did it do, and can we prove the record wasn't forged by the compromised agent itself?"*
 
-<p align="center">
-  <a href="#"><img alt="status" src="https://img.shields.io/badge/status-design%20stage-orange"></a>
-  <a href="#"><img alt="built with rust" src="https://img.shields.io/badge/built%20with-Rust-000?logo=rust"></a>
-  <a href="#"><img alt="firecracker" src="https://img.shields.io/badge/runtime-Firecracker-ff9900?logo=amazonaws&logoColor=white"></a>
-  <a href="#"><img alt="phase" src="https://img.shields.io/badge/build-phase%202-blue"></a>
-  <a href="#"><img alt="license" src="https://img.shields.io/badge/license-TBD-lightgrey"></a>
-</p>
+Seneca records agent activity **outside the guest**, in a hash-chained log signed by a host-held key. If an agent fully compromises its own VM, it still **cannot forge, erase, or truncate the evidence** without detection.
 
-<p align="center">
-  <a href="#what">What</a> ·
-  <a href="#why">Why</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#quickstart">Quickstart</a> ·
-  <a href="#the-pieces">The pieces</a> ·
-  <a href="#docs">Docs</a> ·
-  <a href="#status">Status</a>
-</p>
-
----
-
-## What
-
-Seneca runs each AI agent in its own **microVM** (a tiny, fast, isolated virtual computer, via
-[Firecracker](https://firecracker-microvm.github.io/)) and manages the whole **swarm** of them as a
-single unit. Because it owns the machines, it can snapshot an agent's *entire running state — memory
-included* — and pause or resume it in under a second.
-
-## Why
-
-| | Coordination frameworks | Single-sandbox vendors | **Seneca** |
-|---|:---:|:---:|:---:|
-| Coordinate agents | ✅ | — | ✅ |
-| Strong isolation per agent | — | ✅ | ✅ |
-| Snapshot live memory | ❌ | per box | ✅ |
-| **Govern the swarm as one unit** | ❌ | ❌ | ✅ |
-
-One snapshot lever, four superpowers — applied to the **whole team at once**:
-
-- 🧩 **Gang-schedule** — the swarm starts all-or-nothing; never half-launched.
-- 💰 **One shared budget** — compute + tokens + API spend, with a hard stop.
-- ⏸️ **Approval-pause for free** — snapshot the team, resume days later exactly where it left off.
-- 🧊 **Freeze, don't kill** — snapshot-and-quarantine a misbehaving swarm with full evidence intact.
+> Not another sandbox or policy gateway. Isolation and enforcement are table stakes. Seneca's wedge is **guest-unforgeable evidence**.
 
 ## How it works
 
-```
-        CLI ──▶ Control Plane ──▶ Node Agent ──▶ [microVM][microVM][microVM]
-                (decides when)    (does it)          └── one swarm ──┘
-                                       │
-                                  Snapshot Store  (pause · resume · freeze)
-```
+- **Hash chain** — each record links to the previous; altering one breaks the chain.
+- **Host-held signing key** — the chain head is signed by a key the guest never has, so tampering can't be re-signed.
+- **`verify`** — recomputes the chain and pinpoints the first divergence (edit, insertion, or truncation).
 
-The orchestrator is the only thing that touches the machines, so a pause, a budget stop, or a freeze
-applies to the entire swarm — not one box at a time. See [docs/overview.md](docs/overview.md).
-
-## Quickstart
+## Try it
 
 ```bash
-# build (Linux + KVM + a `firecracker` binary needed to boot real VMs)
-cargo build --release
-
-seneca up swarm.example.json   # boot the swarm, all-or-nothing
-seneca freeze demo             # pause + snapshot the whole swarm to disk
-seneca resume demo             # restore it, mid-execution
-seneca status                  # running vs frozen
-seneca down demo               # destroy it
+cargo run -- demo        # compromised guest tries to hide an exfil; Seneca catches it
 ```
-
-## The pieces
-
-- **Control plane** — remembers every swarm, its budget, and its state.
-- **Node agent** — boots microVMs and performs snapshot / pause / resume.
-- **Snapshot store** — the frozen machine states behind pause, resume, and freeze.
-- **Guest** — the agent, running untrusted inside its microVM.
-- **CLI** — launch · freeze · resume · down · status.
-
-## Docs
-
-- [Overview](docs/overview.md) · the full plain-language story
-- [Glossary](docs/glossary.md) · every term explained for a newcomer
-- [Architecture](docs/architecture.md) · the parts and how they connect
-- [Build plan](docs/build-plan.md) · phased implementation
-- [Prior art](docs/prior-art.md) · what exists, and where Seneca's wedge sits
-- [Limitations](docs/limitations.md) · honest limits and gotchas
-- [Whitepaper](whitepaper/seneca.tex) · in-depth architecture (LaTeX)
+```
+seneca record <log> <event> <payload>   # append an event (the host recorder's entrypoint)
+seneca verify <log>                      # check integrity / report divergence
+seneca timeline <log>                    # reconstruct the action history
+```
 
 ## Status
 
-Design stage, building in phases. **Phase 1** (all-or-nothing swarm boot) and **Phase 2**
-(freeze/resume) are implemented in `src/main.rs`. Not production-ready.
+Phase A (the wedge) is built and tested: tamper-evident log + `verify` + the compromise demo (`src/evidence.rs`).
+The microVM harness (`up`/`freeze`/`resume`) exists for the host-side recorder and forensic-freeze phases.
+
+| Phase | What | State |
+|---|---|---|
+| A | Tamper-evident evidence log + verify | ✅ |
+| B | Scoped egress broker + credential brokering | next |
+| C | Forensic freeze → sealed evidence bundle | — |
+| D | Verification surface (timeline, anchors, divergence) | partial |
+
+Design stage; not production-ready. Full thesis: [whitepaper/seneca.tex](whitepaper/seneca.tex).
+
+## Build
+
+```bash
+cargo build --release && cargo test
+```

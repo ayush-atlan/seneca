@@ -25,11 +25,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+mod evidence;
+
 const BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off";
 // ponytail: fixed liveness heuristic; swap for a readiness probe if boots are slow.
 const LIVENESS_WAIT: Duration = Duration::from_millis(1000);
-const USAGE: &str =
-    "usage: seneca up <swarm.json> | freeze <name> | resume <name> | down <name> | status";
+const USAGE: &str = "usage: seneca up <swarm.json> | freeze <name> | resume <name> | down <name> | status\n       \
+                     seneca record <log> <event> <payload> | verify <log> | timeline <log> | demo";
 
 // ---- swarm spec (input) ----------------------------------------------------
 
@@ -382,12 +384,18 @@ fn e<E: std::fmt::Display>(err: E) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let r = match (args.first().map(String::as_str), args.get(1).map(String::as_str)) {
-        (Some("up"), Some(spec)) => up(spec),
-        (Some("freeze"), Some(name)) => freeze(name),
-        (Some("resume"), Some(name)) => resume(name),
-        (Some("down"), Some(name)) => down(name),
-        (Some("status"), None) => status(),
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let n = a.len();
+    let r = match a.first().copied().unwrap_or("") {
+        "up" if n == 2 => up(a[1]),
+        "freeze" if n == 2 => freeze(a[1]),
+        "resume" if n == 2 => resume(a[1]),
+        "down" if n == 2 => down(a[1]),
+        "status" if n == 1 => status(),
+        "record" if n == 4 => evidence::record(a[1], a[2], a[3]),
+        "verify" if n == 2 => evidence::verify(a[1]),
+        "timeline" if n == 2 => evidence::timeline(a[1]),
+        "demo" if n == 1 => evidence::demo(),
         _ => {
             eprintln!("{}", USAGE);
             std::process::exit(2);

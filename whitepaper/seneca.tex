@@ -1,0 +1,404 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue,
+  pdftitle={Seneca: The Flight Recorder for AI Agents},
+  pdfauthor={Atlan draft},
+  pdfsubject={Whitepaper draft},
+  pdfkeywords={AI agents, security, auditability, forensics, microVM, tamper-evident logs}
+}
+
+\title{Seneca: The Flight Recorder for AI Agents}
+\author{Draft for internal review}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+AI agents are moving from chat to action: calling tools, using credentials, reaching external systems, and changing real-world state. That shift changes the security question. Before action, teams ask whether an agent should be allowed to do something. After an incident, they ask a different question: \emph{what exactly did the agent do, and can we prove the record was not forged by the compromised agent itself?}
+
+This paper argues that the next control plane for agent security is not another generic sandbox or policy gateway. It is a host-side, tamper-evident evidence layer that records agent activity below the guest operating system and can freeze the runtime as sealed evidence when something goes wrong. We call that layer \textbf{Seneca}: the flight recorder for AI agents.
+
+The thesis is intentionally narrow. Isolation, outbound-only deployment, per-app credentials, and policy enforcement are already becoming table stakes across cloud platforms, sandbox vendors, and open-source runtimes.\footnote{Internal sources that shaped this framing include Atlan's ``Secure Agent 2.0'' architecture and security materials, which already emphasize outbound-only connectivity, per-application OAuth credentials, signed images, secrets that remain in customer infrastructure, and audit logging; Atlan's observability design work, which insists on per-tenant isolation and trace correlation; and Atlan security reviews that identify missing audit trail and traceability as concrete gaps to close.} Seneca does not try to outcompete that layer head-on. Its claim is simpler and stronger: if an agent fully compromises its own guest environment, it should still be unable to erase, forge, or selectively omit the evidence of what it did.
+\end{abstract}
+
+\tableofcontents
+
+\newpage
+
+\section{Executive Summary}
+
+Seneca is a host-side, tamper-evident flight recorder for AI agents running inside microVMs. It records what the agent did at the egress, tool, and credential boundary in a log the guest cannot forge or erase, and it can freeze the entire VM as sealed evidence for investigation.
+
+That framing matters because ``secure runtime'' is no longer a differentiated company thesis. Secure, outbound-only runtimes with scoped credentials, image signing, and observability are already widely shipping. Even inside Atlan's own runtime and observability work, those capabilities appear as baseline design requirements rather than a unique moat.\footnote{Internal sources: ``Secure Agent 2.0'' (Atlan Confluence, Apps space, updated August 2025); ``Automation Engine -- Observability Alignment (Pre-read)'' (Atlan Confluence, February 2026); ``Agentic SRE -- Vision Doc'' (Atlan Confluence, May 2026).}
+
+Seneca's wedge is different: \textbf{guest-unforgeable evidence}. When a regulator, incident responder, or auditor asks what happened, Seneca should answer with a record collected outside the guest trust boundary, hash-chained for integrity, signed by a host-held key, and periodically anchored to an external immutable store. If needed, Seneca pauses the VM and packages RAM, disk, log segment, manifests, hashes, and anchor proofs into a sealed evidence bundle.
+
+The strategic implication is important. The microVM itself is not the moat. The moat is the evidence layer that:
+\begin{enumerate}[leftmargin=1.5em]
+    \item sits below the guest kernel and is therefore structurally harder for the guest to tamper with;
+    \item produces records that a third party can independently verify; and
+    \item maps directly to the accountability gap emerging in regulation, incident response, and enterprise trust.
+\end{enumerate}
+
+\section{The Problem: Agents Need Accountability, Not Just Enforcement}
+
+The market has spent the last year building controls that answer \emph{before-the-fact} questions:
+\begin{itemize}[leftmargin=1.5em]
+    \item What tools may this agent call?
+    \item Which domains may it reach?
+    \item Which credentials may it use?
+    \item Which actions need approval?
+\end{itemize}
+
+Those controls matter. They reduce blast radius. They also align well with Atlan's own posture around outbound-only runtimes, per-app credentials, tenant isolation, and policy-gated actions.\footnote{Internal sources: Atlan secure runtime materials; Atlan agentic reliability design notes describing policy gates, immutable action audit, and human approval for irrecoverable actions.}
+
+But after an incident, security and compliance teams do not lead with policy. They lead with evidence:
+\begin{quote}
+What exactly did the agent do? What did it access? Which credential was used? Which systems were touched? Can we reconstruct the sequence? Can we prove the record itself was not altered after the fact?
+\end{quote}
+
+That is the gap Seneca targets.
+
+\subsection{Why existing categories are not enough}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{0.22\textwidth} p{0.32\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{Category} & \textbf{What it does well} & \textbf{Why it is not Seneca} \\
+\midrule
+Policy gateways / MCP gateways & Allow, deny, inspect, and mediate requests & Strong enforcement point, but not a complete forensic record of a compromised guest by itself \\
+In-process tracing / SDK recorders & Great for observability, debugging, cost, latency, and tool traces & The agent runs on the same path as the recorder; a fully compromised guest can tamper with or suppress evidence \\
+Secure runtimes / sandboxes & Isolation, scoped credentials, outbound-only networking, lower blast radius & Necessary substrate, but isolation alone does not create a third-party-verifiable evidence trail \\
+SIEM / audit platforms & Storage, query, correlation, alerts & Valuable downstream sink, but not the trusted point of evidence capture \\
+\bottomrule
+\end{tabular}
+\caption{Seneca complements existing controls instead of replacing them.}
+\end{table}
+
+The key distinction is trust boundary. If the evidence path lives inside the guest, or inside control paths the guest meaningfully influences, the record may be operationally useful while still being forensically weak. Seneca's thesis is that the evidence path must sit outside the guest.
+
+\section{Why Now}
+
+Three external forces make this problem timely.
+
+First, the EU AI Act's high-risk obligations are pushing organizations toward system-generated evidence. Article 12 requires high-risk AI systems to support the automatic recording of events over the lifetime of the system, with logs sufficient for traceability, post-market monitoring, and operational oversight.\cite{euarticle12} While standards are still maturing, the statutory planning date for these obligations remains 2 August 2026 under the current text, even though delay proposals continue to be discussed.\cite{helpnet}
+
+Second, OWASP's \emph{Top 10 for Agentic Applications 2026} formalizes the security shift from passive model risk to active agent risk. The list includes tool misuse, identity and privilege abuse, memory poisoning, insecure inter-agent communication, cascading failures, and rogue agents.\cite{owaspagentic} That taxonomy matters because it frames agents as actors with memory, tools, delegated authority, and multi-step behavior.
+
+Third, 2026 has already supplied the market with visible failure modes. OpenClaw became a reference case for how quickly agent adoption can outpace runtime hygiene: public reporting described large-scale exposure of internet-facing agents, critical exploitation paths, and a malicious skill supply-chain campaign that poisoned the ecosystem around them.\cite{bitdefenderopenclaw,ibmopenclaw}
+
+In short, the market has enough evidence to care about agent accountability, and not enough infrastructure to prove it.
+
+\section{The Seneca Thesis}
+
+\textbf{Seneca is the flight recorder for AI agents: prove what your agent did, tamper-evidently.}
+
+That claim rests on one proposition:
+
+\begin{quote}
+If an agent fully compromises its own guest environment, it should still be unable to forge, erase, or selectively omit the record of its own actions.
+\end{quote}
+
+If Seneca cannot prove that proposition in a live demo, the thesis fails.
+
+\subsection{Threat model}
+
+Seneca should be designed against the following threat model:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item The guest operating system, agent process, and in-guest tooling may be fully compromised.
+    \item The guest may attempt log deletion, event suppression, credential theft, or covert exfiltration.
+    \item The guest must have exactly one network egress path, and that path must traverse a host-controlled interface.
+    \item The signing key for evidence integrity must never be accessible to the guest.
+    \item External anchoring must limit how much history even a later host compromise could rewrite.
+\end{itemize}
+
+The design should also be explicit about its limits:
+\begin{itemize}[leftmargin=1.5em]
+    \item Seneca can claim payload visibility only where it can lawfully and technically terminate or observe the relevant protocol.
+    \item For certificate-pinned or opaque traffic, Seneca should claim flow metadata only.
+    \item Seneca is not a general solution to prompt injection. It records consequences; it does not promise to prevent them.
+\end{itemize}
+
+\section{Architecture}
+
+Seneca has five core components.
+
+\subsection{1. Host-side network recorder}
+
+The guest gets a single NIC backed by a host tap device. Host firewall policy defaults to deny. Nothing emits a packet except through the host-controlled egress path.
+
+The recorder captures, at minimum:
+\begin{itemize}[leftmargin=1.5em]
+    \item source and destination tuple,
+    \item protocol,
+    \item host or SNI where available,
+    \item byte counts,
+    \item start and end time,
+    \item decision outcome where policy or broker logic is involved.
+\end{itemize}
+
+This is the structural heart of the system. If the guest's only egress path is the host tap, then network evidence is complete by construction.
+
+\subsection{2. Scoped egress broker and credential injector}
+
+Seneca should be honest about what it can inspect.
+
+For an allowlist of TLS-terminable APIs, the broker:
+\begin{itemize}[leftmargin=1.5em]
+    \item terminates TLS,
+    \item injects the real credential at the wire,
+    \item ensures the guest holds only a placeholder,
+    \item records method, host, path, credential identifier, and response status.
+\end{itemize}
+
+It should also hard-block the cloud metadata endpoint (\texttt{169.254.169.254}) and other equivalent platform identity paths.
+
+For everything else---certificate-pinned endpoints, opaque protocols, raw sockets---Seneca should allow or deny and record only flow metadata. That boundary is not a weakness if it is stated clearly; it is what makes the whitepaper credible.
+
+\subsection{3. Tamper-evident log}
+
+This is the load-bearing cryptography.
+
+Each record takes the form:
+\begin{center}
+\texttt{\{seq, prev\_hash, host\_time, event, payload\}}
+\end{center}
+
+Each record hash is computed over the full tuple, chained to the previous record. The current chain head is signed by a key held outside the guest, ideally via TPM or cloud KMS, and the chain is periodically anchored to an external immutable target such as object-lock storage, a trusted timestamping service, or a transparency log.
+
+This does not make the host omnipotent or perfect. It does something more practical: it turns silent tampering into visible divergence, and it bounds the rewrite window between anchors.
+
+\subsection{4. Forensic freeze}
+
+On a trigger---policy hit, anomaly, operator command, or incident workflow---Seneca pauses the VM and snapshots RAM and disk. It hashes the snapshot, writes a freeze event into the chain, and emits a sealed evidence bundle containing:
+\begin{itemize}[leftmargin=1.5em]
+    \item snapshot files,
+    \item relevant log segment,
+    \item chain metadata,
+    \item anchor proofs,
+    \item manifest,
+    \item signature.
+\end{itemize}
+
+The point is preservation, not termination. Security teams do not want the system merely dead; they want it preserved.
+
+\subsection{5. Investigation and verification surface}
+
+The buyer-facing surface is not the recorder. It is the verification experience.
+
+Two primitives matter:
+\begin{itemize}[leftmargin=1.5em]
+    \item \texttt{seneca timeline <run>} reconstructs the action history from host-captured evidence.
+    \item \texttt{seneca verify <bundle>} recomputes the chain, checks signatures and anchors, and identifies either integrity or the first point of divergence.
+\end{itemize}
+
+This is the control that turns telemetry into evidence.
+
+\section{What Makes the Position Defensible}
+
+Seneca's moat is frequently misunderstood. It is \emph{not} the microVM.
+
+MicroVMs, OCI runtimes, outbound-only topologies, secret stores, and signed images are increasingly standard. Internally, Atlan's own runtime architecture already treats these as baseline requirements, not a differentiated narrative.\footnote{Internal sources: ``Secure Agent 2.0'' and Atlan's runtime security documentation emphasize per-app OAuth, just-in-time secret retrieval, signed images, outbound-only networking, and customer-controlled deployment environments.}
+
+The durable moat is the evidence layer:
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Substrate-neutrality.} Seneca should become the evidence layer that other sandboxes integrate, not a monolithic runtime that competes with every sandbox vendor.
+    \item \textbf{Third-party verifiability.} Logs that can be independently checked are more valuable to auditors and incident responders than logs customers must trust on vendor assertion alone.
+    \item \textbf{Compliance fit.} Chain of custody, automatic logging, log integrity, and post-incident reconstruction map more directly to regulation and enterprise review than generic ``AI safety'' messaging.
+\end{enumerate}
+
+This also explains the honest company risk: Seneca is easier to describe as a feature than as a company. That is why composability and verification matter. If the evidence layer can plug into multiple substrates and remain independently useful, it is harder to absorb into a single vendor's runtime narrative.
+
+\section{Alignment with Atlan's Existing Point of View}
+
+The strongest version of this whitepaper should not fight Atlan's current positioning. It should extend it.
+
+Atlan already speaks fluently about:
+\begin{itemize}[leftmargin=1.5em]
+    \item chain of custody and decision traces,
+    \item versioned, queryable observability,
+    \item per-tenant isolation,
+    \item immutable or externally anchored action records,
+    \item human approval for irrecoverable actions,
+    \item auditability as a first-class product requirement.
+\end{itemize}
+
+Internally, Atlan's observability and agentic reliability work treats traces as more than debugging artifacts: they are inputs to evaluation, cost attribution, operational reconstruction, and audit.\footnote{Internal sources: ``Automation Engine -- Observability Alignment (Pre-read)''; ``Agentic SRE -- Vision Doc''; context-layer planning notes on OpenTelemetry, ClickHouse, and multi-tenant trace storage.} Atlan's security reviews also repeatedly surface the absence of detailed audit trail and traceability as a real control gap, with explicit prescriptions for SIEM shipping, immutable storage, and evidence retention.\footnote{Internal source: ``App security posture enhancement's'' security review, February 2026.}
+
+Seneca fits that worldview precisely. It is the evidence substrate beneath the context layer:
+\begin{quote}
+not just what the agent \emph{thought}, but what the agent \emph{did}.
+\end{quote}
+
+\section{Build Plan}
+
+Seneca should be built in risk order, not feature order.
+
+\subsection{Phase A: Prove the thesis}
+
+Use the existing microVM harness. Give the guest a single host tap. Set host firewall default to deny. Run a host-side recorder that writes to a hash-chained log signed by a host-held key.
+
+Then run the only demo that matters:
+\begin{quote}
+From inside a deliberately compromised guest, attempt to hide or alter an exfiltration attempt. Show that the host record still captures it. Then run verification and show the chain remains intact.
+\end{quote}
+
+If this demo fails, stop.
+
+\subsection{Phase B: Add scoped broker and credential brokering}
+
+Add the broker for allowlisted APIs, placeholder credentials in guest, wire-time credential injection, and credential-use logging. Hard-block metadata services. Record only metadata for pinned or opaque flows.
+
+\subsection{Phase C: Turn freeze into evidence}
+
+Wire snapshot and freeze into triggers. Produce the sealed evidence bundle. Treat resume hazards as mandatory engineering:
+\begin{itemize}[leftmargin=1.5em]
+    \item reseed guest RNG,
+    \item resync clock,
+    \item reassign MAC and IP on resume or clone.
+\end{itemize}
+
+\subsection{Phase D: Ship verification}
+
+Build the operator and auditor primitives:
+\begin{itemize}[leftmargin=1.5em]
+    \item timeline reconstruction,
+    \item chain verification,
+    \item signature and anchor validation,
+    \item divergence reporting.
+\end{itemize}
+
+\subsection{Phase E: Make Seneca composable}
+
+Define a thin integration contract:
+\begin{quote}
+Give Seneca the agent's egress handle, the relevant execution hooks, and access to snapshot APIs.
+\end{quote}
+
+Adapters should target raw Firecracker first, but then broaden to other runtimes. This is the move that turns competitive pressure into a distribution channel.
+
+\section{Validation Gate}
+
+Before investing heavily in polish, take Phases A and B to 5--10 security, incident response, or compliance teams and ask one question:
+
+\begin{quote}
+When an AI agent does something bad, can you prove what it did in a way the agent could not have tampered with---to an auditor?
+\end{quote}
+
+If the answer is ``no, and we need that,'' continue. If the answer is indifference, preserve the work as a sharp technical demonstration and avoid forcing a company thesis where the market does not validate one.
+
+\section{Non-Goals}
+
+Seneca should explicitly \emph{not} be framed as:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item a general agent sandbox or isolation runtime,
+    \item a real-time policy gateway for all agent traffic,
+    \item a universal prompt-injection prevention system,
+    \item a broad orchestration platform,
+    \item a replacement for SIEM, EDR, or conventional incident response tooling.
+\end{itemize}
+
+This discipline is a strength. It keeps the product pointed at the one question the market still struggles to answer.
+
+\section{Who Buys and Why They Care}
+
+The most likely buyer is not the frontier-model team. It is Security, Incident Response, and Compliance.
+
+They care when:
+\begin{itemize}[leftmargin=1.5em]
+    \item agents can take real actions,
+    \item those actions touch regulated systems or sensitive data,
+    \item the blast radius of a mistake or exploit is operational, legal, or reputational,
+    \item they need post-incident reconstruction with evidentiary integrity.
+\end{itemize}
+
+The strongest initial verticals are those where the regulator question lands immediately: financial services, healthcare, insurance, critical operations, and large enterprises with strict internal controls.
+
+\section{Suggested Internal Reviewers}
+
+For internal refinement, these reviewers would improve specific sections:\footnote{Reviewer suggestions are based on internal authorship, ownership, and role data from Atlan's people directory and the documents retrieved during research.}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{0.28\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{Name} & \textbf{Role} & \textbf{Best review area} \\
+\midrule
+Anbarasan Thangapalam & Senior Engineering Manager & Agent tracing, observability pipeline, host-side telemetry strategy \\
+Birendra Sahu & Distinguished Software Engineer & Context layer, systems architecture, platform strategy \\
+Saravanan Elumalai & Principal Software Engineer & Trace storage, export paths, economics of observability \\
+Arnab Saha & Senior Engineering Manager & Agentic operations, action gating, evaluation and reliability framing \\
+Rajeev Mishra & Engineering Manager, Security \& Compliance & Auditability, incident evidence, compliance language \\
+Suhas Gaikwad & Senior Engineering Manager -- Security & Security posture, incident response, review of risk claims \\
+Avinash Shankar & Sr Implementation Engineer & Customer-deployed runtime realities, deployment and operability caveats \\
+\bottomrule
+\end{tabular}
+\caption{Suggested internal reviewers for the next draft.}
+\end{table}
+
+\section{Conclusion}
+
+The market does not need another generic claim that agents should run in secure sandboxes. It needs a system that can answer the post-incident question with evidence strong enough for security teams, auditors, and operators to trust.
+
+That is the opportunity for Seneca.
+
+The differentiated claim is not that the agent ran somewhere isolated. It is that the record of what the agent did was captured outside the guest trust boundary, made tamper-evident, and sealed as evidence when needed. If Seneca can demonstrate that property against a fully compromised guest, it has a real wedge. If it cannot, the thesis should be abandoned quickly.
+
+That clarity is a feature, not a limitation. The best security products of the next wave will not merely block bad behavior. They will make accountability provable.
+
+\begin{thebibliography}{9}
+
+\bibitem{euarticle12}
+European Commission AI Act Service Desk.
+\newblock \emph{Article 12: Record-keeping}.
+\newblock Available at: \url{https://ai-act-service-desk.ec.europa.eu/en/ai-act/article-12}.
+
+\bibitem{owaspagentic}
+OWASP GenAI Security Project.
+\newblock \emph{OWASP Top 10 for Agentic Applications for 2026}.
+\newblock Published December 2025.
+\newblock Available at: \url{https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/}.
+
+\bibitem{bitdefenderopenclaw}
+Bitdefender.
+\newblock \emph{135,000+ OpenClaw AI agents exposed online as misconfiguration fuels takeover risk}.
+\newblock Published February 12, 2026.
+\newblock Available at: \url{https://www.bitdefender.com/en-us/blog/hotforsecurity/135k-openclaw-ai-agents-exposed-online}.
+
+\bibitem{ibmopenclaw}
+IBM X-Force.
+\newblock \emph{What OpenClaw reveals about agentic AI security risks}.
+\newblock Published April 24, 2026.
+\newblock Available at: \url{https://www.ibm.com/think/x-force/what-openclaw-reveals-about-agentic-ai-security-risks}.
+
+\bibitem{helpnet}
+Help Net Security.
+\newblock \emph{What the EU AI Act requires for AI agent logging}.
+\newblock Published April 16, 2026.
+\newblock Available at: \url{https://www.helpnetsecurity.com/2026/04/16/eu-ai-act-logging-requirements/}.
+
+\end{thebibliography}
+
+\end{document}
+
