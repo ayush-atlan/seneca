@@ -1,6 +1,12 @@
-# Seneca
+<p align="center">
+  <img width="200" height="200" alt="Seneca" src="https://github.com/user-attachments/assets/254858fa-f3bc-4899-bde6-2af5a14a9fa6" />
+</p>
 
-**The flight recorder for AI agents — prove what your agent did, tamper-evidently.**
+<h1 align="center">Seneca</h1>
+
+<p align="center">
+  <b>The flight recorder for AI agents — prove what your agent did, tamper-evidently.</b>
+</p>
 
 AI agents now take real actions with real credentials. After an incident the question isn't "should it have?" — it's *"what exactly did it do, and can we prove the record wasn't forged by the compromised agent itself?"*
 
