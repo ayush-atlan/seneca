@@ -33,7 +33,7 @@ seneca timeline <log>                    # reconstruct the action history
 
 ## Status
 
-Phase A (the wedge) is built and tested: tamper-evident log + `verify` + the compromise demo (`src/evidence.rs`).
+Phase A (the wedge) is built and tested: tamper-evident log + `verify` + the compromise demo — see [docs/phase-1.md](docs/phase-1.md) (`src/evidence.rs`).
 The microVM harness (`up`/`freeze`/`resume`) exists for the host-side recorder and forensic-freeze phases.
 
 | Phase | What | State |
